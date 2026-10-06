@@ -2,49 +2,94 @@
 
 declare(strict_types=1);
 
-namespace Paygreen\SyliusPaygreenPlugin\Form\Type;
+namespace PayGreen\SyliusPayumPlugin\Form\Type;
 
-use Paygreen\Sdk\Payment\V2\Enum\PaymentTypeEnum;
-use Paygreen\SyliusPaygreenPlugin\Payum\Bridge\PaygreenBridge;
+use Paygreen\Sdk\Payment\V3\Environment;
+use PayGreen\SyliusPayumPlugin\Bridge\PayGreen\ClientFactory;
 use Symfony\Component\Form\AbstractType;
 use Symfony\Component\Form\Extension\Core\Type\ChoiceType;
+use Symfony\Component\Form\Extension\Core\Type\PasswordType;
 use Symfony\Component\Form\Extension\Core\Type\TextType;
 use Symfony\Component\Form\FormBuilderInterface;
+use Symfony\Component\OptionsResolver\OptionsResolver;
+use Symfony\Component\Validator\Constraints\Callback;
 use Symfony\Component\Validator\Constraints\NotBlank;
-use Symfony\Component\Validator\Constraints\NotNull;
+use Symfony\Component\Validator\Context\ExecutionContextInterface;
 
-final class PaygreenGatewayConfigurationType extends AbstractType
+final class PayGreenGatewayConfigurationType extends AbstractType
 {
+    public function __construct(private readonly ?ClientFactory $clientFactory = null)
+    {
+    }
+
     public function buildForm(FormBuilderInterface $builder, array $options): void
     {
         $builder
-            // Add public and private to the form
-            ->add('public_key', TextType::class, ['label' => 'paygreen.sylius_plugin.form.public_key'])
-            ->add('private_key', TextType::class, ['label' => 'paygreen.sylius_plugin.form.private_key'])
-            // Allows the customer to choose the payment type of his button
-            ->add('payment_type', ChoiceType::class, [
-                'label' => 'paygreen.sylius_plugin.form.payment_type.name',
-                'choices' => [
-                    'paygreen.sylius_plugin.form.payment_type.CB' => PaymentTypeEnum::CB,
-                    'paygreen.sylius_plugin.form.payment_type.TRD' => PaymentTypeEnum::TRD,
-                    'paygreen.sylius_plugin.form.payment_type.LUNCHR' => 'LUNCHR',
-                    'paygreen.sylius_plugin.form.payment_type.RESTOFLASH' => PaymentTypeEnum::RESTOFLASH,
-                ],
-                'constraints' => [
-                    new NotBlank(),
-                    new NotNull(),
-                ]
+            ->add('shop_id', TextType::class, [
+                'label' => 'paygreen.gateway_configuration.shop_id',
+                'constraints' => [new NotBlank(['groups' => ['sylius']])],
             ])
-            ->add('display_mode', ChoiceType::class, [
-                'label' => 'paygreen.sylius_plugin.form.display_mode.name',
+            ->add('public_key', TextType::class, [
+                'label' => 'paygreen.gateway_configuration.public_key',
+            ])
+            ->add('secret_key', PasswordType::class, [
+                'label' => 'paygreen.gateway_configuration.secret_key',
+                'always_empty' => false,
+            ])
+            ->add('environment_mode', ChoiceType::class, [
+                'label' => 'paygreen.gateway_configuration.environment',
                 'choices' => [
-                    'paygreen.sylius_plugin.form.display_mode.redirect' => PaygreenBridge::DISPLAY_MODE_REDIRECT,
-                    'paygreen.sylius_plugin.form.display_mode.insite' => PaygreenBridge::DISPLAY_MODE_INSITE,
+                    'paygreen.gateway_configuration.environment_production' => Environment::ENVIRONMENT_PRODUCTION,
+                    'paygreen.gateway_configuration.environment_sandbox' => Environment::ENVIRONMENT_SANDBOX,
                 ],
-                'constraints' => [
-                    new NotBlank(),
-                    new NotNull(),
-                ]
+            ])
+        ;
+    }
+
+    public function configureOptions(OptionsResolver $resolver): void
+    {
+        $resolver->setDefaults([
+            'data_class' => null,
+            'constraints' => [
+                new Callback([$this, 'validateCredentials'], groups: ['sylius']),
+            ],
+        ]);
+    }
+
+    public function validateCredentials(mixed $config, ExecutionContextInterface $context): void
+    {
+        if (!is_array($config)) {
+            return;
+        }
+
+        $shopId = trim((string) ($config['shop_id'] ?? ''));
+        $secretKey = trim((string) ($config['secret_key'] ?? ''));
+        if ('' === $secretKey) {
+            $context
+                ->buildViolation('paygreen.gateway_configuration.secret_key_required')
+                ->atPath('[secret_key]')
+                ->addViolation()
+            ;
+
+            return;
+        }
+
+        if ('' === $shopId || null === $this->clientFactory) {
+            return;
+        }
+
+        try {
+            $this->clientFactory->create([
+                'shop_id' => $shopId,
+                'secret_key' => $secretKey,
+                'environment' => (string) ($config['environment_mode'] ?? Environment::ENVIRONMENT_PRODUCTION),
             ]);
+        } catch (\Throwable) {
+            $context
+                ->buildViolation('paygreen.gateway_configuration.credentials_invalid')
+                ->atPath('[secret_key]')
+                ->addViolation()
+            ;
+        }
     }
 }
